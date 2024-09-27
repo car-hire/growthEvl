@@ -1,0 +1,594 @@
+import os
+import sys
+import json
+
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import transforms, datasets
+from tqdm import tqdm
+import matplotlib.pyplot as plt
+
+from PIL import ImageFile
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+import numpy as np
+
+
+class SimAM_module(torch.nn.Module):
+    def __init__(self, channels=None, e_lambda=1e-4):
+        super(SimAM_module, self).__init__()
+        self.activation = nn.Sigmoid()
+        self.e_lambda = e_lambda
+
+    def __repr__(self):
+        s = self.__class__.__name__ + '('
+        s += ('lambad=%f)' % self.e_lambda)
+        return s
+
+    @staticmethod
+    def get_module_name():
+        return 'simam'
+
+    def forward(self, x):
+        b, c, h, w = x.size()
+        n = w * h - 1
+        x_minus_mu_square = (x - x.mean(dim=[2, 3], keepdim=True)).pow(2)
+        y = x_minus_mu_square / (4 * (x_minus_mu_square.sum(dim=[2, 3], keepdim=True) / n + self.e_lambda)) + 0.5
+        return x * self.activation(y)
+
+
+# class Bottleneck_SimAM(nn.Module):
+#     def __init__(self,c1,c2,shortcut=True,g=1,e=0.5):
+#         super(Bottleneck_SimAM,self).__init__()
+#         c_ = int(c2*e)
+#         self.cv1 = Conv(c1,c_,1,1)
+#         self.cv2 = Conv(c_,c2,3,1,g=g)
+#         self.add = shortcut and c1 == c2
+#         self.attention = SimAM_module(channels=c2)
+#     def forward(self,x):
+#         return x + self.attention(self.cv2(self.cv1(x))) if self.add else self.cv2(self.cv1(x))
+
+
+
+# class Channel_Att(nn.Module):
+#     def __init__(self, channels=3, t=16):
+#         super(Channel_Att, self).__init__()
+#         self.channels = channels
+#         self.bn2 = nn.BatchNorm2d(channels)
+
+#     def forward(self, x):
+#         residual = x
+#         x = self.bn2(x)
+#         weight_bn = torch.abs(self.bn2.weight) / torch.sum(torch.abs(self.bn2.weight))
+#         x = x.permute(0, 2, 3, 1)
+#         x = torch.mul(weight_bn, x)
+#         x = x.permute(0, 3, 1, 2)
+#         x = torch.sigmoid(x) * residual
+#         return x
+
+# class Att(nn.Module):
+#     def __init__(self, channels=3, out_channels=None, no_spatial=True):
+#         super(Att, self).__init__()
+#         self.Channel_Att = Channel_Att(channels)
+
+#     def forward(self, x):
+#         x_out1 = self.Channel_Att(x)
+#         return x_out1
+# class Channel_Att(nn.Module):
+#     def __init__(self, channels, t=16):
+#         super(Channel_Att, self).__init__()
+#         self.channels = channels
+
+#         self.bn2 = nn.BatchNorm2d(self.channels, affine=True)
+
+
+#     def forward(self, x):
+#         residual = x
+
+#         x = self.bn2(x)
+#         weight_bn = self.bn2.weight.data.abs() / torch.sum(self.bn2.weight.data.abs())
+#         x = x.permute(0, 2, 3, 1).contiguous()
+#         x = torch.mul(weight_bn, x)
+#         x = x.permute(0, 3, 1, 2).contiguous()
+
+#         x = torch.sigmoid(x) * residual #
+
+#         return x
+
+
+# class Att(nn.Module):
+#     def __init__(self, channels, out_channels=None, no_spatial=True):
+#         super(Att, self).__init__()
+#         self.Channel_Att = Channel_Att(channels)
+
+#     def forward(self, x):
+#         x_out1=self.Channel_Att(x)
+
+#         return x_out1
+# class SELayer(nn.Module):
+#     def __init__(self, channel, reduction=16):
+#         super(SELayer, self).__init__()
+#         self.avg_pool = nn.AdaptiveAvgPool2d(1)
+#         self.fc = nn.Sequential(
+#             nn.Linear(channel, channel // reduction, bias=False),
+#             nn.ReLU(inplace=True),
+#             nn.Linear(channel // reduction, channel, bias=False),
+#             nn.Sigmoid()
+#         )
+
+#     def forward(self, x):
+#         b, c, _, _ = x.size()
+#         y = self.avg_pool(x).view(b, c)
+#         y = self.fc(y).view(b, c, 1, 1)
+#         return x * y.expand_as(x)
+
+# class ChannelAttention(nn.Module):
+#     def __init__(self, in_planes, ratio=16):
+#         super(ChannelAttention, self).__init__()
+#         self.avg_pool = nn.AdaptiveAvgPool2d(1)
+#         self.max_pool = nn.AdaptiveMaxPool2d(1)
+
+#         self.fc1   = nn.Conv2d(in_planes, in_planes // 16, 1, bias=False)
+#         self.relu1 = nn.ReLU()
+#         self.fc2   = nn.Conv2d(in_planes // 16, in_planes, 1, bias=False)
+
+#         self.sigmoid = nn.Sigmoid()
+
+#     def forward(self, x):
+#         avg_out = self.fc2(self.relu1(self.fc1(self.avg_pool(x))))
+#         max_out = self.fc2(self.relu1(self.fc1(self.max_pool(x))))
+#         out = avg_out + max_out
+#         return self.sigmoid(out)
+
+# class SpatialAttention(nn.Module):
+#     def __init__(self, kernel_size=7):
+#         super(SpatialAttention, self).__init__()
+
+#         assert kernel_size in (3, 7), 'kernel size must be 3 or 7'
+#         padding = 3 if kernel_size == 7 else 1
+
+#         self.conv1 = nn.Conv2d(2, 1, kernel_size, padding=padding, bias=False)
+#         self.sigmoid = nn.Sigmoid()
+
+#     def forward(self, x):
+#         avg_out = torch.mean(x, dim=1, keepdim=True)
+#         max_out, _ = torch.max(x, dim=1, keepdim=True)
+#         x = torch.cat([avg_out, max_out], dim=1)
+#         x = self.conv1(x)
+#         return self.sigmoid(x)
+
+
+class BasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, in_channel, out_channel, stride=1, downsample=None, **kwargs):
+        super(BasicBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels=in_channel, out_channels=out_channel,
+                               kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channel)
+        self.relu = nn.ReLU()
+        self.conv2 = nn.Conv2d(in_channels=out_channel, out_channels=out_channel,
+                               kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channel)
+        self.downsample = downsample
+        self.stride = stride
+
+    #         self.nam = Att(out_channel)
+    #         self.nam = Att(out_channel,no_spatial=self.no_spatial)
+
+    def forward(self, x):
+        identity = x
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+        if self.downsample is not None:
+            identity = self.downsample(x)
+        #         out = self.nam(out)
+        out += identity
+        out = self.relu(out)
+
+        return out
+
+
+class Bottleneck(nn.Module):
+    """
+    注意：原论文中，在虚线残差结构的主分支上，第一个1x1卷积层的步距是2，第二个3x3卷积层步距是1。
+    但在pytorch官方实现过程中是第一个1x1卷积层的步距是1，第二个3x3卷积层步距是2，
+    这么做的好处是能够在top1上提升大概0.5%的准确率。
+    可参考Resnet v1.5 https://ngc.nvidia.com/catalog/model-scripts/nvidia:resnet_50_v1_5_for_pytorch
+    """
+    expansion = 4
+
+    def __init__(self, in_channel, out_channel, stride=1, downsample=None, reduction=16,
+                 groups=1, width_per_group=64):
+        super(Bottleneck, self).__init__()
+
+        width = int(out_channel * (width_per_group / 64.)) * groups
+
+        self.conv1 = nn.Conv2d(in_channels=in_channel, out_channels=width,
+                               kernel_size=1, stride=1, bias=False)  # squeeze channels
+        self.bn1 = nn.BatchNorm2d(width)
+        # -----------------------------------------
+        self.conv2 = nn.Conv2d(in_channels=width, out_channels=width, groups=groups,
+                               kernel_size=3, stride=stride, bias=False, padding=1)
+        self.bn2 = nn.BatchNorm2d(width)
+        # -----------------------------------------
+        self.conv3 = nn.Conv2d(in_channels=width, out_channels=out_channel * self.expansion,
+                               kernel_size=1, stride=1, bias=False)  # unsqueeze channels
+        self.bn3 = nn.BatchNorm2d(out_channel * self.expansion)
+        self.relu = nn.ReLU(inplace=True)
+        self.downsample = downsample
+        self.stride = stride
+        #         self.se = SELayer(out_channel * 4, reduction)
+        self.attention = SimAM_module(channels=out_channel)
+
+    #         self.nam = Att(out_channel*4)
+    #         self.no_spatial = no_spatial
+    #         self.nam = Att(out_channel * 4, no_spatial=self.no_spatial)
+
+    def forward(self, x):
+        identity = x
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.relu(out)
+
+        out = self.conv3(out)
+        out = self.bn3(out)
+        #         out = self.se(out)
+        out = self.attention(out)
+        if self.downsample is not None:
+            identity = self.downsample(x)
+        #         out = self.nam(out)
+        out += identity
+        out = self.relu(out)
+
+        return out
+
+
+class ResNet(nn.Module):
+
+    def __init__(self,
+                 block,
+                 blocks_num,
+                 num_classes=1000,
+                 include_top=True,
+                 groups=1,
+                 zero_init_residual=False,
+                 width_per_group=64):
+        super(ResNet, self).__init__()
+        self.include_top = include_top
+        self.in_channel = 64
+
+        self.groups = groups
+        self.width_per_group = width_per_group
+
+        self.conv1 = nn.Conv2d(3, self.in_channel, kernel_size=7, stride=2,
+                               padding=3, bias=False)
+        self.bn1 = nn.BatchNorm2d(self.in_channel)
+        self.relu = nn.ReLU(inplace=True)
+
+        #          # 网络的第一层加入注意力机制
+        #         self.ca = ChannelAttention(self.in_channel)
+        #         self.sa = SpatialAttention()
+
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.layer1 = self._make_layer(block, 64, blocks_num[0])
+        self.layer2 = self._make_layer(block, 128, blocks_num[1], stride=2)
+        self.layer3 = self._make_layer(block, 256, blocks_num[2], stride=2)
+        self.layer4 = self._make_layer(block, 512, blocks_num[3], stride=2)
+
+        #           # 网络的卷积层的最后一层加入注意力机制
+        #         self.ca1 = ChannelAttention(2048)
+        #         self.sa1 = SpatialAttention()
+        #         self.ca1 = Att(2048)
+
+        if self.include_top:
+            self.avgpool = nn.AdaptiveAvgPool2d((1, 1))  # output size = (1, 1)
+            self.fc = nn.Linear(512 * block.expansion, num_classes)
+
+        #         for m in self.modules():
+        #             if isinstance(m, nn.Conv2d):
+        #                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+        # Zero-initialize the last BN in each residual branch,
+        # so that the residual branch starts with zeros, and each residual block behaves like an identity.
+        # This improves the model by 0.2~0.3% according to https://arxiv.org/abs/1706.02677
+        if zero_init_residual:
+            for m in self.modules():
+                if isinstance(m, Bottleneck):
+                    nn.init.constant_(m.bn3.weight, 0)
+                elif isinstance(m, BasicBlock):
+                    nn.init.constant_(m.bn2.weight, 0)
+
+    def _make_layer(self, block, channel, block_num, stride=1):
+        downsample = None
+        if stride != 1 or self.in_channel != channel * block.expansion:
+            downsample = nn.Sequential(
+                nn.Conv2d(self.in_channel, channel * block.expansion, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(channel * block.expansion))
+
+        layers = []
+        layers.append(block(self.in_channel,
+                            channel,
+                            downsample=downsample,
+                            stride=stride,
+                            groups=self.groups,
+                            width_per_group=self.width_per_group))
+        self.in_channel = channel * block.expansion
+
+        for _ in range(1, block_num):
+            layers.append(block(self.in_channel,
+                                channel,
+                                groups=self.groups,
+                                width_per_group=self.width_per_group))
+
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+
+        #         x = self.ca(x) * x
+        #         x = self.sa(x) * x
+
+        x = self.maxpool(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        if self.include_top:
+            #             x = self.ca1(x) * x
+            #             x = self.sa1(x) * x
+
+            x = self.avgpool(x)
+            x = torch.flatten(x, 1)
+            x = self.fc(x)
+
+        return x
+
+
+def resnet34(num_classes=1000, include_top=True):
+    # https://download.pytorch.org/models/resnet34-333f7ec4.pth
+    return ResNet(BasicBlock, [3, 4, 6, 3], num_classes=num_classes, include_top=include_top)
+
+
+def resnet50(num_classes=1000, include_top=True):
+    # https://download.pytorch.org/models/resnet50-19c8e357.pth
+    return ResNet(Bottleneck, [3, 4, 6, 3], num_classes=num_classes, include_top=include_top)
+
+
+def resnet101(num_classes=1000, include_top=True):
+    # https://download.pytorch.org/models/resnet101-5d3b4d8f.pth
+    return ResNet(Bottleneck, [3, 4, 23, 3], num_classes=num_classes, include_top=include_top)
+
+
+def resnext50_32x4d(num_classes=1000, include_top=True):
+    # https://download.pytorch.org/models/resnext50_32x4d-7cdf4587.pth
+    groups = 32
+    width_per_group = 4
+    return ResNet(Bottleneck, [3, 4, 6, 3],
+                  num_classes=num_classes,
+                  include_top=include_top,
+                  groups=groups,
+                  width_per_group=width_per_group)
+
+
+def resnext101_32x8d(num_classes=1000, include_top=True):
+    # https://download.pytorch.org/models/resnext101_32x8d-8ba56ff5.pth
+    groups = 32
+    width_per_group = 8
+    return ResNet(Bottleneck, [3, 4, 23, 3],
+                  num_classes=num_classes,
+                  include_top=include_top,
+                  groups=groups,
+                  width_per_group=width_per_group)
+
+
+# 定义绘图函数
+def plot_loss_acc(train_loss, train_acc, val_loss, val_acc):
+    fig, axs = plt.subplots(2, 1, figsize=(10, 10))
+    # 绘制训练集和验证集的损失函数曲线图
+    axs[0].plot(train_loss, label='Train')
+    axs[0].plot(val_loss, label='Validation')
+    axs[0].set_title('Loss')
+    axs[0].legend(loc='best')
+    # 绘制训练集和验证集的精确度曲线图
+    axs[1].plot(train_acc, label='Train')
+    axs[1].plot(val_acc, label='Validation')
+    axs[1].set_title('Accuracy')
+    axs[1].legend(loc='best')
+    plt.xlabel('Epoch')
+    plt.show()
+
+
+def main():
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print("using {} device.".format(device))
+
+    data_transform = {
+        "train": transforms.Compose([transforms.RandomResizedCrop(224),
+                                     transforms.RandomHorizontalFlip(),
+                                     transforms.ToTensor(),
+                                     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])]),
+        "val": transforms.Compose([transforms.Resize(256),
+                                   transforms.CenterCrop(224),
+                                   transforms.ToTensor(),
+                                   transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])}
+
+    data_root = os.path.abspath(os.path.join(os.getcwd(), "../../../"))  # get data root path
+    image_path = os.path.join(data_root, "ghz",  "ricetotal1")  # flower data set path
+    assert os.path.exists(image_path), "{} path does not exist.".format(image_path)
+    train_dataset = datasets.ImageFolder(root=os.path.join(image_path, "train"),
+                                         transform=data_transform["train"])
+    train_num = len(train_dataset)
+
+    # {'daisy':0, 'dandelion':1, 'roses':2, 'sunflower':3, 'tulips':4}
+    flower_list = train_dataset.class_to_idx
+    cla_dict = dict((val, key) for key, val in flower_list.items())
+    # write dict into json file
+    json_str = json.dumps(cla_dict, indent=4)
+    with open('class_indices.json', 'w') as json_file:
+        json_file.write(json_str)
+    #     def objective(x):
+    #     # 设置超参数
+    #         lr = x[0]
+    #         print(lr)
+    #         batch_size = int(x[1])
+    #         print(batch_size)
+    #         epochs = int(x[2])
+    #         print(epochs)
+    batch_size = 32
+    nw = min([os.cpu_count(), batch_size if batch_size > 1 else 0, 8])  # number of workers
+    print('Using {} dataloader workers every process'.format(nw))
+    num_workers = nw
+    #     print(type(batch_size))
+    train_loader = torch.utils.data.DataLoader(train_dataset,
+                                               batch_size=batch_size, shuffle=True,
+                                               num_workers=0)
+    validate_dataset = datasets.ImageFolder(root=os.path.join(image_path, "val"),
+                                            transform=data_transform["val"])
+    val_num = len(validate_dataset)
+    validate_loader = torch.utils.data.DataLoader(validate_dataset,
+                                                  batch_size=batch_size, shuffle=False,
+                                                  num_workers=0)
+
+    print("using {} images for training, {} images for validation.".format(train_num,
+                                                                           val_num))
+
+    net = resnet50()
+    #     net = resnet50(num_classes=5)
+    # load pretrain weights
+    #     download url: https://download.pytorch.org/models/resnet34-333f7ec4.pth
+    model_weight_path = "/home/ghz/weights/resnet50.pth"
+    assert os.path.exists(model_weight_path), "file {} does not exist.".format(model_weight_path)
+    net.load_state_dict(torch.load(model_weight_path), False)
+    #     for param in net.parameters():
+    #         param.requires_grad = False
+
+    # change fc layer structure
+    in_channel = net.fc.in_features
+    net.fc = nn.Linear(in_channel, 5)
+    net.to(device)
+
+    # define loss function
+    loss_function = nn.CrossEntropyLoss()
+
+    # construct an optimizer
+    params = [p for p in net.parameters() if p.requires_grad]
+    optimizer = optim.Adam(params, lr=0.0001)
+    #     optimizer = optim.Adam(params, lr=lr)
+
+    epochs = 100
+    best_acc = 0.0
+    save_path = '/home/ghz/trweights1/resNet50_SAM.pth'
+    train_steps = len(train_loader)
+    trains_loss = []
+    trains_acc = []
+    vals_loss = []
+    val_acc = []
+    for epoch in range(epochs):
+        # train
+        net.train()
+        running_loss = 0.0
+        val_loss = 0.0
+        training = 0.0
+        train_bar = tqdm(train_loader, file=sys.stdout)
+        for step, data in enumerate(train_bar):
+            images, labels = data
+            optimizer.zero_grad()
+            logits = net(images.to(device))
+            lable = labels.to(device)
+            #             loss = loss_function(weighted_logits, lable)
+            loss = loss_function(logits, lable)
+            loss.backward()
+            optimizer.step()
+            # loss = loss_function(outputs, test_labels)
+            train_y = torch.max(logits, dim=1)[1]
+            training += torch.eq(train_y, lable).sum().item()
+            #   print(training)
+            # print statistics
+            running_loss += loss.item()
+
+            train_bar.desc = "train epoch[{}/{}] loss:{:.3f}".format(epoch + 1,
+                                                                     epochs,
+                                                                     loss)
+
+        # validate
+        net.eval()
+        acc = 0.0  # accumulate accurate number / epoch
+        with torch.no_grad():
+            val_bar = tqdm(validate_loader, file=sys.stdout)
+            for val_data in val_bar:
+                val_images, val_labels = val_data
+                image = val_images.to(device)
+                label = val_labels.to(device)
+                outputs = net(image)
+                loss = loss_function(outputs, label)
+                val_loss += loss.item()
+                predict_y = torch.max(outputs, dim=1)[1]
+                acc += torch.eq(predict_y, val_labels.to(device)).sum().item()
+                val_bar.desc = "valid epoch[{}/{}]".format(epoch + 1,
+                                                           epochs)
+
+        train_acc = training / train_num
+        val_accurate = acc / val_num
+        print('[epoch %d] train_loss: %.3f train_acc: %.3f val_loss: %.3f val_accuracy: %.3f' %
+              (epoch + 1, running_loss / train_num, train_acc, val_loss / val_num, val_accurate))
+
+        if val_accurate > best_acc:
+            best_acc = val_accurate
+            torch.save(net.state_dict(), save_path)
+        trains_loss.append(running_loss / train_num)
+        trains_acc.append(train_acc)
+        vals_loss.append(val_loss / val_num)
+        val_acc.append(val_accurate)
+    #     plot_loss_acc(trains_loss, val_acc)
+    plot_loss_acc(trains_loss, trains_acc, vals_loss, val_acc)
+    data = {
+        'Training Loss': trains_loss,
+        'Training Accuracy': trains_acc,
+        'Validation Loss': vals_loss,
+        'Validation Accuracy': val_acc
+    }
+    # 创建一个数据框
+    df = pd.DataFrame(data)
+    # 将数据框写入Excel文件
+    df.to_excel('/home/ghz/hub/weights/resNet50_SAM.xlsx', index=False)
+    print('Finished Training')
+
+
+#     bounds = [(1e-6, 1e-2), (32, 128), (50, 100)]
+#     num_particles = 20
+#     lower = [bound[0] for bound in bounds]
+#     upper = [bound[1] for bound in bounds]
+#     best_params, best_score = pso(objective,lower,upper,bounds, args=(), swarmsize=num_particles, maxiter=100)
+#     print('Best para meters found by PSO: {}\nBest score found by PSO: {:.2f}%'.format(best_params, best_score))
+
+if __name__ == '__main__':
+    main()
